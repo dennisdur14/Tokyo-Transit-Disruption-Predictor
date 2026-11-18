@@ -1,0 +1,4 @@
+# Minimal dependencies for the scheduled collector (src/collect.py) in GitHub Actions.
+requests>=2.31
+gtfs-realtime-bindings>=1.0
+protobuf>=4.25

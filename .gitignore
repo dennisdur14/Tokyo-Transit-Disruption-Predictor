@@ -1,14 +1,18 @@
 __pycache__/
 *.py[cod]
-*$py.class
-.env
+.pytest_cache/
 .venv/
 venv/
-data/*.db
-data/*.sqlite
-data/*.csv
-artifacts/*.joblib
-artifacts/*.json
-artifacts/*.png
-.pytest_cache/
+.env
 .DS_Store
+
+# Generated locally -- rebuild with the commands in the README
+data/*.db
+data/raw/
+data/gtfs_cache/
+artifacts/*
+!artifacts/.gitkeep
+
+# Used only inside the GitHub Action
+.gtfs-cache/
+datastore/

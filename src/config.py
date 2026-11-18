@@ -1,3 +1,4 @@
+"""Paths, data-source URLs, and the hand-made route/rail reference data."""
 from __future__ import annotations
 
 import os
@@ -5,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
+try:  # optional: lets you keep ODPT_API_KEY in a local .env file
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -15,220 +16,112 @@ except ImportError:
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SQL_DIR = ROOT_DIR / "sql"
 DATA_DIR = ROOT_DIR / "data"
+RAW_DIR = DATA_DIR / "raw"
 ARTIFACTS_DIR = ROOT_DIR / "artifacts"
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+# os.getenv returns "" (not the default) when a variable exists but is empty -- which is
+# what an unset GitHub secret looks like -- so fall back with `or`, not getenv's default.
+DB_PATH = Path(os.getenv("TRANSIT_DB_PATH") or DATA_DIR / "tokyo_transit.db")
+ODPT_API_KEY = os.getenv("ODPT_API_KEY") or ""
 
-ODPT_API_KEY = os.getenv("ODPT_API_KEY", "")
-ODPT_TRAIN_INFO_URL = os.getenv(
-    "ODPT_TRAIN_INFO_URL",
-    "https://api.odpt.org/api/v4/odpt:TrainInformation",
-)
-TOEI_VEHICLE_POS_URL = os.getenv(
-    "TOEI_VEHICLE_POS_URL",
-    "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus_VehiclePosition",
-)
-TOEI_TRIP_UPDATE_URL = os.getenv(
-    "TOEI_TRIP_UPDATE_URL",
-    "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus_TripUpdate",
-)
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'tokyo_transit.db'}")
+# --- Data sources (checked against the live services on 2026-11-18) ---
+# Keyless ODPT endpoints: Toei bus positions, Toei bus timetable, Toei rail status.
+TOEI_BUS_POSITIONS_URL = "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus"
+TOEI_BUS_GTFS_URL = "https://api-public.odpt.org/api/v4/files/Toei/data/ToeiBus-GTFS.zip"
+ODPT_PUBLIC_TRAIN_INFO_URL = "https://api-public.odpt.org/api/v4/odpt:TrainInformation"
+# Needs a free developer key from developer.odpt.org; adds JR East, Tokyo Metro, Tokyu, ...
+ODPT_TRAIN_INFO_URL = "https://api.odpt.org/api/v4/odpt:TrainInformation"
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+TOKYO_LAT, TOKYO_LON = 35.6895, 139.6917
+
+BUCKET_SECONDS = 900  # 15-minute buckets
+HORIZON_SECONDS = 1800  # forecast the bucket that starts 30 minutes later
 
 
-def get_connection(db_url: str | None = None):
-    """Return a DB-API connection (sqlite3 locally or SQLAlchemy/psycopg2 for PostgreSQL)."""
-    url = db_url or DATABASE_URL
-    if url.startswith("sqlite:///"):
-        db_path = url.replace("sqlite:///", "", 1)
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    from sqlalchemy import create_engine
-
-    engine = create_engine(url, future=True)
-    return engine.raw_connection()
+def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
+    path = Path(db_path or DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 @dataclass(frozen=True)
-class RailLineSpec:
-    line_id: str
-    operator_name: str
-    line_name_en: str
-    line_name_ja: str
-    primary_hub: str
-    hub_lat: float
-    hub_lon: float
+class RailLine:
+    line_id: str  # ODPT railway ID
+    operator: str
+    name_en: str
+    name_ja: str
+    needs_key: bool  # True = only available from the keyed ODPT endpoint
 
 
 @dataclass(frozen=True)
-class BusRouteSpec:
+class BusRoute:
     route_id: str
-    route_code: str
-    route_name_en: str
-    route_name_ja: str
-    anchor_hub: str
-    nearest_rail_line_id: str
-    hub_distance_km: float
-    baseline_headway_sec: int
+    route_code: str  # Toei's public route code
+    gtfs_short_name: str  # route_short_name in Toei's GTFS after NFKC normalisation
+    name_en: str
+    name_ja: str
+    lat: float  # centroid of the route's stops (for the map)
+    lon: float
 
 
-RAIL_LINES: list[RailLineSpec] = [
-    RailLineSpec(
-        line_id="odpt.Railway:JR-East.Yamanote",
-        operator_name="JR-East",
-        line_name_en="JR Yamanote Line",
-        line_name_ja="JR山手線",
-        primary_hub="Shinjuku",
-        hub_lat=35.6896,
-        hub_lon=139.7006,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:JR-East.ChuoRapid",
-        operator_name="JR-East",
-        line_name_en="JR Chuo Rapid Line",
-        line_name_ja="JR中央線快速",
-        primary_hub="Shinjuku",
-        hub_lat=35.6909,
-        hub_lon=139.7003,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:Odakyu.Odawara",
-        operator_name="Odakyu",
-        line_name_en="Odakyu Odawara Line",
-        line_name_ja="小田急小田原線",
-        primary_hub="Shinjuku-West",
-        hub_lat=35.6889,
-        hub_lon=139.6987,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:Tokyu.DenEnToshi",
-        operator_name="Tokyu",
-        line_name_en="Tokyu Den-en-toshi Line",
-        line_name_ja="東急田園都市線",
-        primary_hub="Shibuya",
-        hub_lat=35.6580,
-        hub_lon=139.7016,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:TokyoMetro.Ginza",
-        operator_name="TokyoMetro",
-        line_name_en="Tokyo Metro Ginza Line",
-        line_name_ja="東京メトロ銀座線",
-        primary_hub="Shimbashi",
-        hub_lat=35.6664,
-        hub_lon=139.7583,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:Toei.Oedo",
-        operator_name="Toei",
-        line_name_en="Toei Oedo Line",
-        line_name_ja="都営大江戸線",
-        primary_hub="Roppongi",
-        hub_lat=35.6628,
-        hub_lon=139.7314,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:JR-East.KeihinTohoku",
-        operator_name="JR-East",
-        line_name_en="JR Keihin-Tohoku Line",
-        line_name_ja="JR京浜東北線",
-        primary_hub="Shinagawa",
-        hub_lat=35.6285,
-        hub_lon=139.7388,
-    ),
-    RailLineSpec(
-        line_id="odpt.Railway:TokyoMetro.Marunouchi",
-        operator_name="TokyoMetro",
-        line_name_en="Tokyo Metro Marunouchi Line",
-        line_name_ja="東京メトロ丸ノ内線",
-        primary_hub="Tokyo",
-        hub_lat=35.6812,
-        hub_lon=139.7671,
-    ),
+RAIL_LINES: list[RailLine] = [
+    RailLine("odpt.Railway:Toei.Oedo", "Toei", "Toei Oedo Line", "都営大江戸線", False),
+    RailLine("odpt.Railway:Toei.Mita", "Toei", "Toei Mita Line", "都営三田線", False),
+    RailLine("odpt.Railway:TokyoMetro.Ginza", "TokyoMetro", "Tokyo Metro Ginza Line", "東京メトロ銀座線", True),
+    RailLine("odpt.Railway:TokyoMetro.Marunouchi", "TokyoMetro", "Tokyo Metro Marunouchi Line", "東京メトロ丸ノ内線", True),
+    RailLine("odpt.Railway:JR-East.Yamanote", "JR-East", "JR Yamanote Line", "JR山手線", True),
+    RailLine("odpt.Railway:Tokyu.DenEnToshi", "Tokyu", "Tokyu Den-en-toshi Line", "東急田園都市線", True),
 ]
 
-BUS_ROUTES: list[BusRouteSpec] = [
-    BusRouteSpec(
-        route_id="Toei.To01",
-        route_code="都01",
-        route_name_en="Shibuya Sta. - Roppongi - Shimbashi Sta.",
-        route_name_ja="渋谷駅前〜六本木〜新橋駅前",
-        anchor_hub="Shibuya",
-        nearest_rail_line_id="odpt.Railway:Tokyu.DenEnToshi",
-        hub_distance_km=0.18,
-        baseline_headway_sec=360,
-    ),
-    BusRouteSpec(
-        route_id="Toei.Shuku74",
-        route_code="宿74",
-        route_name_en="Shinjuku Sta. West - Tokyo Women's Medical Univ.",
-        route_name_ja="新宿駅西口〜東京女子医大前",
-        anchor_hub="Shinjuku-West",
-        nearest_rail_line_id="odpt.Railway:Odakyu.Odawara",
-        hub_distance_km=0.12,
-        baseline_headway_sec=480,
-    ),
-    BusRouteSpec(
-        route_id="Toei.Shuku91",
-        route_code="宿91",
-        route_name_en="Shinjuku Sta. West - Shin-Daita Sta.",
-        route_name_ja="新宿駅西口〜新代田駅前",
-        anchor_hub="Shinjuku",
-        nearest_rail_line_id="odpt.Railway:JR-East.ChuoRapid",
-        hub_distance_km=0.22,
-        baseline_headway_sec=540,
-    ),
-    BusRouteSpec(
-        route_id="Toei.Shina97",
-        route_code="品97",
-        route_name_en="Shinagawa Sta. Takanawa - Shinjuku Sta. West",
-        route_name_ja="品川駅高輪口〜新宿駅西口",
-        anchor_hub="Shinagawa",
-        nearest_rail_line_id="odpt.Railway:JR-East.KeihinTohoku",
-        hub_distance_km=0.25,
-        baseline_headway_sec=600,
-    ),
-    BusRouteSpec(
-        route_id="Toei.To02",
-        route_code="都02",
-        route_name_en="Otsuka Sta. - Kasuga - Kinshicho Sta.",
-        route_name_ja="大塚駅前〜春日駅前〜錦糸町駅前",
-        anchor_hub="Shinjuku",
-        nearest_rail_line_id="odpt.Railway:JR-East.Yamanote",
-        hub_distance_km=0.35,
-        baseline_headway_sec=420,
-    ),
-    BusRouteSpec(
-        route_id="Toei.Shibu88",
-        route_code="渋88",
-        route_name_en="Shibuya Sta. - Azabu-Juban - Shimbashi Sta.",
-        route_name_ja="渋谷駅前〜麻布十番駅前〜新橋駅前",
-        anchor_hub="Roppongi",
-        nearest_rail_line_id="odpt.Railway:Toei.Oedo",
-        hub_distance_km=0.20,
-        baseline_headway_sec=540,
-    ),
-    BusRouteSpec(
-        route_id="Toei.To05",
-        route_code="都05-1",
-        route_name_en="Tokyo Sta. Marunouchi South - Kachidoki - Harumi",
-        route_name_ja="東京駅丸の内南口〜勝どき駅前〜晴海埠頭",
-        anchor_hub="Tokyo",
-        nearest_rail_line_id="odpt.Railway:TokyoMetro.Marunouchi",
-        hub_distance_km=0.15,
-        baseline_headway_sec=360,
-    ),
-    BusRouteSpec(
-        route_id="Toei.Hashi86",
-        route_code="橋86",
-        route_name_en="Meguro Sta. - Azabu-Juban - Shimbashi Sta.",
-        route_name_ja="目黒駅前〜麻布十番駅前〜新橋駅前",
-        anchor_hub="Shimbashi",
-        nearest_rail_line_id="odpt.Railway:TokyoMetro.Ginza",
-        hub_distance_km=0.24,
-        baseline_headway_sec=600,
-    ),
+# Route names and coordinates were checked against Toei's published GTFS timetable.
+BUS_ROUTES: list[BusRoute] = [
+    BusRoute("Toei.To01", "都01", "都01(T01)", "Shibuya Sta. - Roppongi - Shimbashi Sta.",
+             "渋谷駅前〜六本木駅前〜新橋駅前", 35.6643, 139.7343),
+    BusRoute("Toei.Shuku74", "宿74", "宿74", "Shinjuku Sta. West - Higashi-Shinjuku - Tokyo Women's Medical Univ.",
+             "新宿駅西口〜東新宿駅前〜東京女子医大前", 35.6978, 139.7112),
+    BusRoute("Toei.Shuku91", "宿91", "宿91", "Shinjuku Sta. West - Nakano-Sakaue - Shin-Daita Sta.",
+             "新宿駅西口〜中野坂上〜新代田駅前", 35.6886, 139.6666),
+    BusRoute("Toei.Shina97", "品97", "品97", "Shinagawa Sta. - Aoyama-Itchome - Shinjuku Sta. West",
+             "品川駅高輪口〜青山一丁目駅前〜新宿駅西口", 35.6598, 139.7248),
+    BusRoute("Toei.To02", "都02", "都02", "Otsuka Sta. - Kasuga - Okachimachi - Kinshicho Sta.",
+             "大塚駅前〜春日駅前〜御徒町駅前〜錦糸町駅前", 35.7092, 139.7710),
+    BusRoute("Toei.Shibu88", "渋88", "渋88", "Shibuya Sta. - Roppongi - Kamiyacho - Shimbashi Sta.",
+             "渋谷駅前〜六本木駅前〜神谷町駅前〜新橋駅前", 35.6631, 139.7321),
+    BusRoute("Toei.To05-1", "都05-1", "都05-1", "Tokyo Sta. Marunouchi South - Ginza - Kachidoki - Harumi Futo",
+             "東京駅丸の内南口〜銀座四丁目〜勝どき駅前〜晴海埠頭", 35.6639, 139.7719),
+    BusRoute("Toei.Hashi86", "橋86", "橋86", "Shimbashi Sta. - Azabu-Juban - Shirokanedai - Meguro Sta.",
+             "新橋駅前〜麻布十番駅前〜白金台五丁目〜目黒駅前", 35.6518, 139.7352),
+]
+
+# Which rail lines could plausibly push riders onto each bus route. This is a hypothesis
+# read off the routes' real stop lists, not a measured fact -- the real-data analysis is
+# what tests it. Relations:
+#   parallel        - runs alongside the line for several stations
+#   same_endpoints  - connects the same two hubs as the line
+#   crosses         - meets the line at one station mid-route
+#   shares_terminal - starts or ends at one of the line's stations
+ROUTE_RAIL_LINKS: list[tuple[str, str, str]] = [
+    ("Toei.To01", "odpt.Railway:TokyoMetro.Ginza", "same_endpoints"),
+    ("Toei.To01", "odpt.Railway:Toei.Oedo", "crosses"),
+    ("Toei.To01", "odpt.Railway:Tokyu.DenEnToshi", "shares_terminal"),
+    ("Toei.Shuku74", "odpt.Railway:Toei.Oedo", "parallel"),
+    ("Toei.Shuku91", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
+    ("Toei.Shuku91", "odpt.Railway:Toei.Oedo", "crosses"),
+    ("Toei.Shina97", "odpt.Railway:JR-East.Yamanote", "same_endpoints"),
+    ("Toei.Shina97", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
+    ("Toei.Shina97", "odpt.Railway:Toei.Oedo", "crosses"),
+    ("Toei.To02", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
+    ("Toei.To02", "odpt.Railway:Toei.Oedo", "parallel"),
+    ("Toei.To02", "odpt.Railway:Toei.Mita", "crosses"),
+    ("Toei.To02", "odpt.Railway:JR-East.Yamanote", "shares_terminal"),
+    ("Toei.Shibu88", "odpt.Railway:TokyoMetro.Ginza", "same_endpoints"),
+    ("Toei.Shibu88", "odpt.Railway:Toei.Oedo", "crosses"),
+    ("Toei.Shibu88", "odpt.Railway:Tokyu.DenEnToshi", "shares_terminal"),
+    ("Toei.To05-1", "odpt.Railway:Toei.Oedo", "parallel"),
+    ("Toei.To05-1", "odpt.Railway:TokyoMetro.Marunouchi", "shares_terminal"),
+    ("Toei.Hashi86", "odpt.Railway:Toei.Mita", "parallel"),
+    ("Toei.Hashi86", "odpt.Railway:Toei.Oedo", "parallel"),
+    ("Toei.Hashi86", "odpt.Railway:JR-East.Yamanote", "same_endpoints"),
 ]

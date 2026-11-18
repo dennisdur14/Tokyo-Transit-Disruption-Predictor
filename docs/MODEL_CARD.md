@@ -1,26 +1,58 @@
-# Model Card: Tokyo Multimodal Transit Disruption & Cascade Predictor
+# Model card: 30-minute Toei bus delay forecast
 
-## 1. Model Details
-- **Architecture:** Gradient Boosted Decision Tree (`XGBRegressor`, max depth 5, 260 estimators, L2 regularization $\lambda = 1.5$) paired with a domain-calibrated Japanese railway bulletin parser and dense subword/multilingual text embeddings.
-- **Forecast Horizon:** +30 minutes (`target_delay_30m_sec`) at 15-minute spatial-temporal corridor resolution across 8 major Toei Bus transfer corridors in Tokyo.
+## Model details
 
-## 2. Intended Use & Users
-- **Primary Users:** Transit operations dispatchers, municipal mobility planners, and emergency response coordinators.
-- **Intended Use:** Anticipating surface bus overcrowding, headway bunching, and *振替輸送* (alternative transit transfer) spillover surges 30 minutes after upstream urban rail incidents.
-- **Out-of-Scope Use:** Automated safety-critical rail signaling control or individual driver disciplinary evaluation.
+- **Task:** forecast a bus route's mean delay (seconds behind schedule) in the 15-minute interval
+  that starts 30 minutes from now.
+- **Model:** XGBoost regressor (250 trees, depth 5, learning rate 0.05) predicting the *change* from
+  the current delay. Six variants (A-F) differ only in their inputs; F uses everything.
+- **Inputs:** time of day and route; recent bus delays and weather; the rail status header of linked
+  lines; what the rule-based parser reads from their Japanese bulletins (disrupted, suspended,
+  resumed, 振替輸送, cause, heuristic severity); TF-IDF embeddings of the bulletin text.
+- **Version:** November 2026. Hyperparameters are fixed, not tuned.
 
-## 3. Data Sources & Leakage Controls
-- **Structured Sources:** Toei Bus GTFS-Realtime (`TripUpdate`), static corridor topology (`bus_routes`, `rail_lines`), and Open-Meteo Tokyo hourly weather (`temp_c`, `precip_mm`, `wind_speed_ms`).
-- **Unstructured Source:** ODPT `odpt:TrainInformation` Japanese service-status bulletins across 8 Tokyo rail lines.
-- **Temporal Leakage Prevention:**
-  - All SQL window functions (`AVG() OVER (ROWS BETWEEN 3 PRECEDING AND CURRENT ROW)` and `LAG()`) in `sql/features.sql` strictly look backward in time.
-  - Rail alert joins restrict `ra.observed_epoch` to `[bucket_15m_epoch - 2700, bucket_15m_epoch]`.
-  - Model evaluation enforces a strict **80% past / 20% future chronological split** rather than randomized cross-validation.
+## Intended use
 
-## 4. Surge Alert Definition
-A corridor is flagged for a 30-minute surge (`target_surge_30m = 1`) when predicted delay exceeds the route's rolling 60-minute baseline by $\ge 180\text{ s}$ or reaches $\ge 420\text{ s}$ absolute delay.
+- A research and portfolio project testing whether rail-disruption bulletins carry information about
+  later bus delays.
+- **Not** for operational dispatching or passenger information. It has not been validated on real data.
 
-## 5. Known Limitations & Failure Modes
-1. **GTFS-Realtime Packet Drops:** During severe congestion or cellular outages, vehicle `TripUpdate` feeds may under-report active bus counts.
-2. **Exogenous Non-Rail Events:** Stadium concerts, fireworks festivals, or street closures create localized road congestion not reflected in rail bulletins.
-3. **Cold-Start Corridors:** Newly added bus routes without mapped transfer-hub distances default to zero rail spillover until registered in `bus_routes`.
+## Data
+
+- **Current:** synthetic data from `src/simulate.py` (28 days, 8 routes, 6 rail lines). Bus spillover
+  is planted from hidden incident attributes and never from the bulletin text or parser output.
+- **Being collected:** real Toei bus positions with timetable-based delay estimates, ODPT rail
+  bulletins and Open-Meteo weather, every 15 minutes from 18 November 2026.
+
+## Evaluation
+
+- **Rolling origin:** the newer half of the timeline is split into 4 successive test blocks. Each block
+  is forecast by models trained only on earlier data, with a 30-minute gap so no training target
+  falls inside the test block.
+- **Baselines:** persistence (A), and model C, which has no rail information. Rail features have to
+  beat C to count.
+- **Placebo check:** the same evaluation on a simulated world with the rail effect switched off.
+- **Metrics:** RMSE and MAE on all test rows and on rail-disruption windows (a linked line showed
+  trouble in the past hour); F1 for "surge" intervals (≥3 minutes above the past hour's average, or
+  ≥7 minutes late).
+
+## Results (synthetic only)
+
+| | Change in disruption-window RMSE vs. model C, mean of 5 seeds |
+|---|---|
+| D. + status header | planted −6.8%, placebo +0.4% |
+| E. + parsed bulletin text | planted −12.9% (one seed +29%), placebo +1.1% |
+| F. + TF-IDF embeddings | planted −13.4%, placebo +1.4% |
+
+Negative means lower error. Seed-level results are in `artifacts/sanity_check_runs.csv` after
+`python -m src.sanity_check`.
+
+## Limitations and risks
+
+- No real-data performance is known yet. The synthetic results depend on assumed incident rates and
+  effect sizes.
+- Rare, large disruptions dominate the error. With few incidents to learn from, rail features can
+  make forecasts worse (one of five synthetic seeds did).
+- Bus delays are estimated from position snapshots (about ±1 minute) and the feed has gaps.
+- The route-to-rail links are a hand-made hypothesis.
+- The parser's severity score is a hand-set heuristic, not a calibrated probability.

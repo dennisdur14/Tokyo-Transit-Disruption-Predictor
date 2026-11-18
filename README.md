@@ -1,127 +1,233 @@
-# Tokyo Multimodal Transit Disruption & Cascade Predictor
+# Tokyo rail-to-bus spillover
 
-**Real-Time Cross-Modal Delay Forecasting: Fusing ODPT Japanese Rail Bulletins & Toei Bus GTFS-Realtime Telemetry**
+**Question:** when a Tokyo rail line is disrupted, do nearby Toei buses actually run later, and do
+the rail operators' Japanese service bulletins help forecast by how much?
 
-## Overview
-While Tokyo's rail network maintains high baseline punctuality, acute service disruptions (*運転見合わせ* suspensions, *人身事故* track incidents, *車両点検* rolling-stock faults, and *強風* severe-wind restrictions) trigger immediate passenger spillover onto surface bus corridors—especially when operators activate **振替輸送** (*furikae yuso*, alternative transit transfer acceptance).
+When a line stops, operators often announce **振替輸送** (*furikae yusō*): passengers may use their
+tickets on other lines and on buses. Stranded riders pile onto parallel bus routes, boarding takes
+longer, and delays build. This project collects real-time Tokyo data to test whether that spillover
+is measurable, and builds a forecasting pipeline that reads the bulletins.
 
-This system ingests structured bus telemetry (Toei Bus GTFS-Realtime), hourly meteorological observations (Open-Meteo Tokyo), and unstructured Japanese railway operational bulletins (Public Transportation Open Data Center / ODPT `odpt:TrainInformation`) into a normalized relational database, engineers lag-safe rolling features in SQL, and forecasts **30-minute downstream bus corridor delays and surge alerts** using gradient-boosted trees and bilingual NLP embeddings.
+## Status (18 Nov 2026)
 
-## System Architecture
+| Part | Status |
+|---|---|
+| Live collector: Toei bus positions with a delay estimate per bus, ODPT rail bulletins, weather | ✅ Working; runs every 15 minutes in GitHub Actions |
+| Pipeline: SQLite → SQL features → forecasting models → dashboard | ✅ Working and tested |
+| Validation on synthetic data with a planted effect and a placebo | ✅ Done, see below |
+| Parser accuracy on hand-labelled **real** bulletins | ⏳ Labelling in progress |
+| Results on **real** data | ⏳ Collecting; analysis after 3-4 weeks |
+
+**No real-world result is claimed yet.** Every model number below comes from synthetic data and only
+shows that the pipeline behaves correctly.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    subgraph Sources["External Data Sources"]
-        ODPT["ODPT API<br/>(odpt:TrainInformation<br/>Japanese Rail Bulletins)"]
-        GTFS["Toei Bus GTFS-RT<br/>(TripUpdate &<br/>VehiclePosition Protobuf)"]
-        WX["Open-Meteo API<br/>(Tokyo Hourly Temp,<br/>Precip & Wind)"]
+    subgraph live["Every 15 minutes, GitHub Actions"]
+        BUS["Toei bus positions<br/>GTFS-Realtime"] --> COL["src/collect.py<br/>delay of each bus vs. timetable"]
+        TT["Toei timetable<br/>GTFS, daily"] --> COL
+        RAIL["ODPT rail bulletins<br/>Japanese text"] --> COL
+        WX["Open-Meteo weather"] --> COL
+        COL --> SNAP[("data branch<br/>gzipped JSON snapshots")]
     end
-
-    subgraph ETL["Ingestion & Bilingual NLP (src/ingest.py, src/nlp_parser.py)"]
-        POLL["Scheduled Poller /<br/>14-Day Cascade Simulator"]
-        NLP["Japanese Incident Extractor<br/>(Cause Taxonomy, 振替輸送 Flag,<br/>Severity Score & Embeddings)"]
-    end
-
-    subgraph DB["Relational Store (sql/schema.sql)"]
-        SQL[(SQLite / PostgreSQL<br/>5 Normalized Tables)]
-    end
-
-    subgraph FE["SQL Feature Engineering (sql/features.sql)"]
-        WIN["CTEs & Window Functions<br/>(Rolling 60m Delay/Headway,<br/>LAG/LEAD, 45m Hub Alert Window)"]
-    end
-
-    subgraph ML["Modeling & Delivery (src/train.py, app.py)"]
-        XGB["Chronological 3-Tier<br/>XGBoost Ablation Pipeline"]
-        UI["Streamlit Executive<br/>Decision Dashboard"]
-    end
-
-    ODPT --> POLL --> NLP --> SQL
-    GTFS --> POLL
-    WX --> POLL
-    SQL --> WIN --> XGB --> UI
+    SIM["src/simulate.py<br/>synthetic world with a planted<br/>or placebo rail effect"] --> LOAD
+    SNAP --> LOAD["src/ingest.py<br/>bulletins read by src/nlp_parser.py"]
+    LOAD --> DB[("SQLite")]
+    DB --> FEAT["sql/features.sql<br/>one row per route per 15 min"]
+    FEAT --> TRAIN["src/train.py<br/>models A-F, rolling-origin test"]
+    FEAT --> CHECK["src/sanity_check.py<br/>planted vs. placebo"]
+    TRAIN --> APP["app.py<br/>Streamlit dashboard"]
 ```
 
-## Relational Database Schema (ERD)
+- **Bus delays from positions.** Toei publishes where each bus is and which stop it is heading to,
+  not how late it is. `src/collect.py` matches each bus to its trip in Toei's timetable and measures
+  the delay against the midpoint of the scheduled times of the stop it just left and the stop it is
+  approaching (accurate to roughly ±1 minute).
+- **Reading the bulletins.** `src/nlp_parser.py` is a transparent rule-based reader for Japanese
+  bulletins: is the line disrupted, suspended, resuming, is 振替輸送 in effect, and why. It handles
+  past-tense notices (「見合わせていましたが、…再開しました」), negations (「振替輸送は実施しておりません」) and
+  full-width digits, all of which appear in real ODPT text.
+- **Features in SQL.** `sql/features.sql` builds one row per bus route per 15 minutes with CTEs and
+  window functions: a time-based rolling hour (`RANGE`, not `ROWS`), lags and the 30-minute-ahead
+  target that check timestamps so gaps can't shift them, the route's linked rail lines' bulletins
+  from the past hour, and the most severe recent cause via `ROW_NUMBER()`.
+- **Models.** Six forecasts of the delay 30 minutes ahead, each adding one information source:
+  A persistence (no model), B time of day + route, C + recent bus delays & weather, D + rail status
+  header, E + bulletin text read by the parser, F + TF-IDF text embeddings. Gradient-boosted trees
+  (XGBoost) predict the *change* from the current delay.
+
+Design choices and their reasons are in [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md).
+
+## Validation on synthetic data
+
+`src/simulate.py` generates rail incidents, Japanese bulletins about them, and bus delays. How much
+an incident delays buses depends on hidden attributes (its phase, 振替輸送, a random size), never on
+the bulletin text or the parser, so the pipeline has to recover the effect by reading the text.
+Every seed is simulated twice: with the effect **planted**, and as a **placebo** with it switched off
+(same weather, incidents, bulletins and bus noise).
+
+![Planted vs. placebo](docs/figures/sanity_check.png)
+
+Across 5 seeds, in rail-disruption windows, compared with model C (no rail information):
+
+- **Placebo:** every model stays within ±3.3% in every seed. Rail features don't "help" when there
+  is nothing to find, so no future information is leaking into the features.
+- **Planted:** reading the bulletin text (E) cuts forecast error by 12.9% on average. It helps in 4 of
+  5 seeds (+11% to +32%) and hurts in one (−29%). That seed's first two weeks contained only three
+  suspensions to learn from, which is a preview of what a few weeks of real data may look like.
+- The TF-IDF embeddings (F) add little beyond the rule-based parser (E).
+
+One run with the default seed (`python -m src.train`):
+
+![Model comparison, seed 42](docs/figures/ablation_comparison.png)
+
+| Model (seed 42, 4 rolling test blocks) | RMSE, all rows | RMSE, rail-disruption windows |
+|---|---:|---:|
+| A. Persistence: delay in 30 min = delay now | 50.7 s | 130.0 s |
+| B. Time of day + route | 52.0 s | 130.0 s |
+| C. + recent bus delays & weather | 43.2 s | 110.5 s |
+| D. + rail status header (no text) | 42.4 s | 107.1 s |
+| E. + bulletin text, parsed by rules | 38.9 s | 74.3 s |
+| F. + bulletin text, TF-IDF embeddings | 38.4 s | 71.0 s |
+
+Seed 42 happens to be one of the favourable seeds; use the 5-seed numbers above as the summary.
+
+## Real data: first checks
+
+In the first snapshots (18 Nov 2026, about 10:15-10:40 JST), every bus in Toei's live feed (593 in one
+snapshot) matched the published timetable by trip, route and stop, and the median estimated delay was
+about 2.5 minutes. Toei's keyless rail feed covers its six lines; its normal-service message is
+「現在、１５分以上の遅延はありません。」("no delays of 15 minutes or more"), which a naive keyword
+parser misreads as a delay. These are checks that the data supports the plan, not results.
+
+## Quickstart
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+python -m src.ingest simulate    # 28 days of synthetic data (fixed seed: same numbers every run)
+python -m src.train              # models A-F with rolling-origin evaluation; charts in artifacts/
+python -m src.sanity_check       # planted vs. placebo over 5 seeds (about a minute)
+pytest                           # test suite
+streamlit run app.py             # dashboard
+```
+
+## Collecting real data
+
+The workflow in `.github/workflows/collect.yml` runs `src/collect.py` every 15 minutes and commits each
+snapshot to a `data` branch, which it creates on the first run. It needs no secrets for Toei data. To
+also collect JR East, Tokyo Metro and Tokyu lines, add a free key from
+[developer.odpt.org](https://developer.odpt.org/) as a repository secret named `ODPT_API_KEY`.
+
+To analyse what has been collected so far:
+
+```bash
+git clone --branch data --single-branch https://github.com/<you>/<repo>.git ../tokyo-transit-data
+python -m src.ingest snapshots --raw-dir ../tokyo-transit-data/raw
+python -m src.train
+```
+
+To measure the parser on real bulletins, run `python -m src.parser_eval export`, fill in the `label_*`
+columns of `data/labels/bulletins.csv`, then run `python -m src.parser_eval score`.
+
+## Database
 
 ```mermaid
 erDiagram
-    RAIL_LINES ||--o{ RAIL_ALERTS : "generates"
-    RAIL_LINES ||--o{ BUS_ROUTES : "nearest_rail_line_id"
-    BUS_ROUTES ||--o{ BUS_TELEMETRY : "records"
+    RAIL_LINES ||--o{ ROUTE_RAIL_LINKS : "may affect"
+    BUS_ROUTES ||--o{ ROUTE_RAIL_LINKS : "is exposed to"
+    RAIL_LINES ||--o{ RAIL_ALERTS : "status over time"
+    BUS_ROUTES ||--o{ BUS_TELEMETRY : "delay per 15 min"
 
     RAIL_LINES {
-        text line_id PK
-        text operator_name
-        text line_name_en
-        text line_name_ja
-        text primary_hub
-        real hub_lat
-        real hub_lon
+        text line_id PK "ODPT railway ID"
+        text operator
+        text name_en
+        text name_ja
+        int needs_key
     }
-
     BUS_ROUTES {
         text route_id PK
-        text route_code
-        text route_name_en
-        text anchor_hub
-        text nearest_rail_line_id FK
-        real hub_distance_km
-        int baseline_headway_sec
+        text route_code "e.g. 都01"
+        text gtfs_short_name
+        text name_en
+        real lat
+        real lon
     }
-
+    ROUTE_RAIL_LINKS {
+        text route_id FK
+        text line_id FK
+        text relation "parallel, crosses, ..."
+    }
     RAIL_ALERTS {
         text alert_id PK
         int observed_epoch
         text line_id FK
         text status_ja
         text text_ja
+        text status_category
         int is_disrupted
-        text parsed_cause
+        int is_suspended
         int has_furikae_yuso
         real severity_score
     }
-
     BUS_TELEMETRY {
-        text obs_id PK
-        int bucket_15m_epoch
         text route_id FK
-        int active_vehicles
+        int bucket_15m_epoch
+        int n_vehicles
         real mean_delay_sec
         real p90_delay_sec
-        real mean_headway_sec
-        real occupancy_ratio
     }
-
     WEATHER_HOURLY {
-        int observed_hour_epoch PK
+        int hour_epoch PK
         real temp_c
         real precip_mm
         real wind_speed_ms
-        int weather_code
     }
 ```
 
-## Quickstart
+`metadata` records whether the data is simulated or collected; the charts and dashboard label
+themselves from it.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+## Limitations
 
-# 1. Populate local SQLite database with 14 days of multimodal Tokyo transit history
-python -m src.ingest --mode simulate --days 14
+- No result on real data yet; the synthetic results depend on assumed incident rates and effect sizes.
+- Bus delay is estimated from 15-minute position snapshots (about ±1 minute per bus), not measured at stops.
+- Which rail lines can affect which bus routes is a hypothesis read off the routes' stop lists
+  (`ROUTE_RAIL_LINKS` in `src/config.py`); the real-data analysis is what tests it.
+- Without an ODPT key only Toei's six rail lines are collected. JR East, Tokyo Metro and Tokyu railway
+  IDs can only be confirmed once a key is set; the loader warns about any linked line it never sees.
+- GitHub can delay or skip scheduled runs, so the collected data has gaps. The SQL handles them, but
+  they reduce the usable data.
+- The parser is keyword rules. Its accuracy on real bulletins is unknown until the labels are done.
 
-# 2. Run SQL feature engineering + chronological 3-tier ablation benchmark
-python -m src.train
+## Data sources
 
-# 3. Run unit & integration tests
-pytest -v
+- Public Transportation Open Data Center (ODPT), [odpt.org](https://www.odpt.org/): Toei bus GTFS and
+  GTFS-Realtime, and rail train information. Toei data is from the Bureau of Transportation, Tokyo
+  Metropolitan Government (東京都交通局). Check each dataset's licence on ODPT before republishing raw data.
+- Weather: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).
 
-# 4. Launch the interactive 4-tab Streamlit dashboard
-streamlit run app.py
+## Project layout
+
 ```
-
-## Live Data Collection (Optional)
-1. Register for a free developer key at [developer.odpt.org](https://developer.odpt.org/).
-2. Copy `.env.example` to `.env` and set `ODPT_API_KEY`.
-3. Run `python -m src.ingest --mode live` or enable the GitHub Actions workflow in `.github/workflows/ingest.yml`.
+app.py                     Streamlit dashboard
+src/config.py              paths, data-source URLs, routes, rail lines and their links
+src/collect.py             one live snapshot (run by GitHub Actions)
+src/simulate.py            synthetic world with a planted or placebo effect
+src/ingest.py              simulation or snapshots -> SQLite
+src/nlp_parser.py          Japanese bulletin rules + TF-IDF embedder
+src/train.py               models A-F, rolling-origin evaluation, charts
+src/sanity_check.py        planted vs. placebo over several seeds
+src/parser_eval.py         export bulletins for labelling; score the parser
+src/charts.py              shared chart style
+sql/schema.sql             tables
+sql/features.sql           feature engineering (CTEs, window functions)
+tests/                     parser, simulator, no-lookahead, collector and end-to-end tests
+docs/MODEL_CARD.md         model card
+docs/DESIGN_DECISIONS.md   why things are done the way they are
+```
