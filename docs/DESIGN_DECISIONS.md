@@ -57,7 +57,7 @@ A test swaps in a nonsense parser and checks the bus delays don't change.
 
 **Why a placebo?** If rail features "help" in a world where rail has no effect, information is
 leaking from the future somewhere. The placebo world is identical except for the effect, so any
-gain there is a red flag. Across 5 seeds the placebo gains stay within ±3.3%.
+gain there is a red flag. Across 5 seeds the placebo gains stay within ±2.6%.
 
 ## Data
 
@@ -95,7 +95,9 @@ PostgreSQL support but couldn't actually run on it.
 a new file of about 18 KB, so the repository grows by roughly 50 MB a month.
 
 **Why are the route–rail links hand-made?** They are a hypothesis read off each route's real stop
-list: which lines it runs alongside or crosses. The real-data analysis is what tests them.
+list: which lines it runs alongside or crosses. Only Toei and Tokyo Metro lines are linked, because
+ODPT's feed has no JR East or Tokyu bulletins (checked with a key). The real-data analysis is what
+tests the links.
 
 ## What I'd do next
 

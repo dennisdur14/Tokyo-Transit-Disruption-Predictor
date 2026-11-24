@@ -2,8 +2,8 @@ name: Collect Tokyo transit snapshots
 
 # Every 15 minutes, save one snapshot of Toei bus positions/delays, ODPT rail bulletins and
 # Tokyo weather, and commit it to the `data` branch (created automatically on the first run).
-# Works without any secrets; add an ODPT_API_KEY repository secret to also collect JR East,
-# Tokyo Metro and Tokyu lines.
+# Works without any secrets; add an ODPT_API_KEY repository secret to also collect Tokyo
+# Metro's lines.
 #
 # GitHub may delay or skip scheduled runs when busy, so expect some gaps; the pipeline
 # handles them. Public repositories get these minutes free. In a private repository, change

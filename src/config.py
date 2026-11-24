@@ -29,7 +29,8 @@ ODPT_API_KEY = os.getenv("ODPT_API_KEY") or ""
 TOEI_BUS_POSITIONS_URL = "https://api-public.odpt.org/api/v4/gtfs/realtime/ToeiBus"
 TOEI_BUS_GTFS_URL = "https://api-public.odpt.org/api/v4/files/Toei/data/ToeiBus-GTFS.zip"
 ODPT_PUBLIC_TRAIN_INFO_URL = "https://api-public.odpt.org/api/v4/odpt:TrainInformation"
-# Needs a free developer key from developer.odpt.org; adds JR East, Tokyo Metro, Tokyu, ...
+# Needs a free developer key from developer.odpt.org; adds Tokyo Metro's lines (and a few
+# others). JR East and Tokyu are NOT in this feed (checked with a key on 2026-11-24).
 ODPT_TRAIN_INFO_URL = "https://api.odpt.org/api/v4/odpt:TrainInformation"
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 TOKYO_LAT, TOKYO_LON = 35.6895, 139.6917
@@ -71,8 +72,8 @@ RAIL_LINES: list[RailLine] = [
     RailLine("odpt.Railway:Toei.Mita", "Toei", "Toei Mita Line", "都営三田線", False),
     RailLine("odpt.Railway:TokyoMetro.Ginza", "TokyoMetro", "Tokyo Metro Ginza Line", "東京メトロ銀座線", True),
     RailLine("odpt.Railway:TokyoMetro.Marunouchi", "TokyoMetro", "Tokyo Metro Marunouchi Line", "東京メトロ丸ノ内線", True),
-    RailLine("odpt.Railway:JR-East.Yamanote", "JR-East", "JR Yamanote Line", "JR山手線", True),
-    RailLine("odpt.Railway:Tokyu.DenEnToshi", "Tokyu", "Tokyu Den-en-toshi Line", "東急田園都市線", True),
+    RailLine("odpt.Railway:TokyoMetro.Hibiya", "TokyoMetro", "Tokyo Metro Hibiya Line", "東京メトロ日比谷線", True),
+    RailLine("odpt.Railway:TokyoMetro.Namboku", "TokyoMetro", "Tokyo Metro Namboku Line", "東京メトロ南北線", True),
 ]
 
 # Route names and coordinates were checked against Toei's published GTFS timetable.
@@ -104,24 +105,27 @@ BUS_ROUTES: list[BusRoute] = [
 #   shares_terminal - starts or ends at one of the line's stations
 ROUTE_RAIL_LINKS: list[tuple[str, str, str]] = [
     ("Toei.To01", "odpt.Railway:TokyoMetro.Ginza", "same_endpoints"),
-    ("Toei.To01", "odpt.Railway:Toei.Oedo", "crosses"),
-    ("Toei.To01", "odpt.Railway:Tokyu.DenEnToshi", "shares_terminal"),
-    ("Toei.Shuku74", "odpt.Railway:Toei.Oedo", "parallel"),
-    ("Toei.Shuku91", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
-    ("Toei.Shuku91", "odpt.Railway:Toei.Oedo", "crosses"),
-    ("Toei.Shina97", "odpt.Railway:JR-East.Yamanote", "same_endpoints"),
-    ("Toei.Shina97", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
-    ("Toei.Shina97", "odpt.Railway:Toei.Oedo", "crosses"),
-    ("Toei.To02", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),
-    ("Toei.To02", "odpt.Railway:Toei.Oedo", "parallel"),
-    ("Toei.To02", "odpt.Railway:Toei.Mita", "crosses"),
-    ("Toei.To02", "odpt.Railway:JR-East.Yamanote", "shares_terminal"),
+    ("Toei.To01", "odpt.Railway:Toei.Oedo", "crosses"),  # Roppongi
+    ("Toei.To01", "odpt.Railway:TokyoMetro.Hibiya", "crosses"),  # Roppongi
+    ("Toei.To01", "odpt.Railway:TokyoMetro.Namboku", "crosses"),  # Tameike, Roppongi-itchome
+    ("Toei.Shuku74", "odpt.Railway:Toei.Oedo", "parallel"),  # Higashi-Shinjuku, Wakamatsu-Kawada
+    ("Toei.Shuku91", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),  # Nakano-Sakaue .. Higashi-Koenji
+    ("Toei.Shuku91", "odpt.Railway:Toei.Oedo", "crosses"),  # Nakano-Sakaue
+    ("Toei.Shina97", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),  # Yotsuya-sanchome .. Shinjuku
+    ("Toei.Shina97", "odpt.Railway:Toei.Oedo", "crosses"),  # Aoyama-itchome
+    ("Toei.Shina97", "odpt.Railway:TokyoMetro.Hibiya", "crosses"),  # Hiroo
+    ("Toei.To02", "odpt.Railway:TokyoMetro.Marunouchi", "parallel"),  # Shin-Otsuka .. Hongo-sanchome
+    ("Toei.To02", "odpt.Railway:Toei.Oedo", "parallel"),  # Kasuga .. Kuramae
+    ("Toei.To02", "odpt.Railway:Toei.Mita", "crosses"),  # Kasuga
+    ("Toei.To02", "odpt.Railway:TokyoMetro.Ginza", "crosses"),  # Ueno-hirokoji
     ("Toei.Shibu88", "odpt.Railway:TokyoMetro.Ginza", "same_endpoints"),
-    ("Toei.Shibu88", "odpt.Railway:Toei.Oedo", "crosses"),
-    ("Toei.Shibu88", "odpt.Railway:Tokyu.DenEnToshi", "shares_terminal"),
-    ("Toei.To05-1", "odpt.Railway:Toei.Oedo", "parallel"),
-    ("Toei.To05-1", "odpt.Railway:TokyoMetro.Marunouchi", "shares_terminal"),
-    ("Toei.Hashi86", "odpt.Railway:Toei.Mita", "parallel"),
-    ("Toei.Hashi86", "odpt.Railway:Toei.Oedo", "parallel"),
-    ("Toei.Hashi86", "odpt.Railway:JR-East.Yamanote", "same_endpoints"),
+    ("Toei.Shibu88", "odpt.Railway:TokyoMetro.Hibiya", "parallel"),  # Roppongi .. Kamiyacho .. Toranomon
+    ("Toei.Shibu88", "odpt.Railway:Toei.Oedo", "crosses"),  # Roppongi
+    ("Toei.To05-1", "odpt.Railway:Toei.Oedo", "parallel"),  # Tsukiji .. Kachidoki
+    ("Toei.To05-1", "odpt.Railway:TokyoMetro.Hibiya", "parallel"),  # Ginza .. Tsukiji
+    ("Toei.To05-1", "odpt.Railway:TokyoMetro.Marunouchi", "shares_terminal"),  # Tokyo
+    ("Toei.Hashi86", "odpt.Railway:Toei.Mita", "parallel"),  # Meguro, Shirokanedai, Onarimon
+    ("Toei.Hashi86", "odpt.Railway:TokyoMetro.Namboku", "parallel"),  # Meguro .. Shirokanedai .. Azabu-Juban
+    ("Toei.Hashi86", "odpt.Railway:Toei.Oedo", "parallel"),  # Azabu-Juban, Akabanebashi
+    ("Toei.Hashi86", "odpt.Railway:TokyoMetro.Hibiya", "crosses"),  # Kamiyacho, Hiroo
 ]

@@ -72,12 +72,12 @@ Every seed is simulated twice: with the effect **planted**, and as a **placebo**
 
 Across 5 seeds, in rail-disruption windows, compared with model C (no rail information):
 
-- **Placebo:** every model stays within ±3.3% in every seed. Rail features don't "help" when there
+- **Placebo:** every model stays within ±2.6% in every seed. Rail features don't "help" when there
   is nothing to find, so no future information is leaking into the features.
-- **Planted:** reading the bulletin text (E) cuts forecast error by 12.9% on average. It helps in 4 of
-  5 seeds (+11% to +32%) and hurts in one (−29%). That seed's first two weeks contained only three
-  suspensions to learn from, which is a preview of what a few weeks of real data may look like.
-- The TF-IDF embeddings (F) add little beyond the rule-based parser (E).
+- **Planted:** reading the bulletin text (E) cuts forecast error by 18.4% on average and helps in
+  every seed, but by anywhere from 0.2% to 34%. The weakest seed's first two weeks contained only
+  three suspensions to learn from, which is a preview of what a few weeks of real data may look like.
+- The TF-IDF embeddings (F) add nothing beyond the rule-based parser (E).
 
 One run with the default seed (`python -m src.train`):
 
@@ -85,12 +85,12 @@ One run with the default seed (`python -m src.train`):
 
 | Model (seed 42, 4 rolling test blocks) | RMSE, all rows | RMSE, rail-disruption windows |
 |---|---:|---:|
-| A. Persistence: delay in 30 min = delay now | 50.7 s | 130.0 s |
-| B. Time of day + route | 52.0 s | 130.0 s |
-| C. + recent bus delays & weather | 43.2 s | 110.5 s |
-| D. + rail status header (no text) | 42.4 s | 107.1 s |
-| E. + bulletin text, parsed by rules | 38.9 s | 74.3 s |
-| F. + bulletin text, TF-IDF embeddings | 38.4 s | 71.0 s |
+| A. Persistence: delay in 30 min = delay now | 52.0 s | 135.9 s |
+| B. Time of day + route | 54.0 s | 135.2 s |
+| C. + recent bus delays & weather | 44.9 s | 120.0 s |
+| D. + rail status header (no text) | 43.5 s | 112.2 s |
+| E. + bulletin text, parsed by rules | 39.6 s | 79.8 s |
+| F. + bulletin text, TF-IDF embeddings | 39.4 s | 78.8 s |
 
 Seed 42 happens to be one of the favourable seeds; use the 5-seed numbers above as the summary.
 
@@ -100,7 +100,9 @@ In the first snapshots (18 Nov 2026, about 10:15-10:40 JST), every bus in Toei's
 snapshot) matched the published timetable by trip, route and stop, and the median estimated delay was
 about 2.5 minutes. Toei's keyless rail feed covers its six lines; its normal-service message is
 「現在、１５分以上の遅延はありません。」("no delays of 15 minutes or more"), which a naive keyword
-parser misreads as a delay. These are checks that the data supports the plan, not results.
+parser misreads as a delay. With an ODPT key (24 Nov 2026) the rail feed adds Tokyo Metro's lines and
+a few smaller operators, but no JR East or Tokyu lines, so the project links bus routes only to Toei
+and Tokyo Metro lines. These are checks that the data supports the plan, not results.
 
 ## Quickstart
 
@@ -120,8 +122,13 @@ streamlit run app.py             # dashboard
 
 The workflow in `.github/workflows/collect.yml` runs `src/collect.py` every 15 minutes and commits each
 snapshot to a `data` branch, which it creates on the first run. It needs no secrets for Toei data. To
-also collect JR East, Tokyo Metro and Tokyu lines, add a free key from
-[developer.odpt.org](https://developer.odpt.org/) as a repository secret named `ODPT_API_KEY`.
+also collect Tokyo Metro's lines, add a free key from [developer.odpt.org](https://developer.odpt.org/)
+as a repository secret named `ODPT_API_KEY`.
+
+GitHub's built-in scheduler is unreliable for frequent jobs: on this repository it ran the 15-minute
+schedule only about 3-4 times a day. For a steady 15-minute rhythm, have an outside scheduler (for
+example cron-job.org) call the workflow's `workflow_dispatch` endpoint, authenticated with a
+fine-grained token that has only the Actions permission on this repository.
 
 To analyse what has been collected so far:
 
@@ -199,8 +206,9 @@ themselves from it.
 - Bus delay is estimated from 15-minute position snapshots (about ±1 minute per bus), not measured at stops.
 - Which rail lines can affect which bus routes is a hypothesis read off the routes' stop lists
   (`ROUTE_RAIL_LINKS` in `src/config.py`); the real-data analysis is what tests it.
-- Without an ODPT key only Toei's six rail lines are collected. JR East, Tokyo Metro and Tokyu railway
-  IDs can only be confirmed once a key is set; the loader warns about any linked line it never sees.
+- Without an ODPT key only Toei's six rail lines are collected. ODPT's feed has no JR East or Tokyu
+  bulletins even with a key, so JR and private-railway disruptions are not covered. The loader warns
+  about any linked line it never sees.
 - GitHub can delay or skip scheduled runs, so the collected data has gaps. The SQL handles them, but
   they reduce the usable data.
 - The parser is keyword rules. Its accuracy on real bulletins is unknown until the labels are done.

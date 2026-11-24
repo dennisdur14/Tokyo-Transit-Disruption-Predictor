@@ -40,9 +40,9 @@
 
 | | Change in disruption-window RMSE vs. model C, mean of 5 seeds |
 |---|---|
-| D. + status header | planted −6.8%, placebo +0.4% |
-| E. + parsed bulletin text | planted −12.9% (one seed +29%), placebo +1.1% |
-| F. + TF-IDF embeddings | planted −13.4%, placebo +1.4% |
+| D. + status header | planted −8.7%, placebo +0.5% |
+| E. + parsed bulletin text | planted −18.4% (every seed improved, by 0.2% to 34.1%), placebo +0.4% |
+| F. + TF-IDF embeddings | planted −17.9%, placebo +1.3% |
 
 Negative means lower error. Seed-level results are in `artifacts/sanity_check_runs.csv` after
 `python -m src.sanity_check`.
@@ -51,8 +51,10 @@ Negative means lower error. Seed-level results are in `artifacts/sanity_check_ru
 
 - No real-data performance is known yet. The synthetic results depend on assumed incident rates and
   effect sizes.
-- Rare, large disruptions dominate the error. With few incidents to learn from, rail features can
-  make forecasts worse (one of five synthetic seeds did).
+- Rare, large disruptions dominate the error. With few incidents to learn from, the gain can vanish:
+  in one of five synthetic seeds the text model gained almost nothing and the embedding model made
+  forecasts slightly worse.
+- ODPT's rail feed has no JR East or Tokyu bulletins, so disruptions on those lines are invisible.
 - Bus delays are estimated from position snapshots (about ±1 minute) and the feed has gaps.
 - The route-to-rail links are a hand-made hypothesis.
 - The parser's severity score is a hand-set heuristic, not a calibrated probability.

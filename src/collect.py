@@ -6,8 +6,8 @@
 Each snapshot records:
   * every Toei bus position (keyless GTFS-Realtime feed), with an estimated delay per bus
     worked out against Toei's published GTFS timetable;
-  * rail status bulletins from ODPT: Toei lines without a key, plus JR East, Tokyo Metro,
-    Tokyu, ... when ODPT_API_KEY is set;
+  * rail status bulletins from ODPT: Toei lines without a key, plus Tokyo Metro's lines
+    when ODPT_API_KEY is set (ODPT's feed has no JR East or Tokyu bulletins);
   * current Tokyo weather from Open-Meteo.
 
 A source that fails is noted under "errors" and the rest is still saved. The run exits
